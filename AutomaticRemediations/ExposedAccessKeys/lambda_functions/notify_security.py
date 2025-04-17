@@ -1,21 +1,19 @@
 ############################################################
-#Author: Manas Satpathi
-#Company: AWS
-#Date: January, 2023
-#Notes: Updated to send email & slack notification
+# Authors: Manas Satpathi, Paul Brazell
+# Company: AWS
+# Date: April 2025
+# Notes: Updated to send email & slack notification
 ############################################################
-import os
-import sys
-import boto3
-
 import json
-import urllib.parse
+import os
+from typing import Any
+import boto3
 import urllib.request
 
-TOPIC_ARN = os.environ['TOPIC_ARN']  # ARN for SNS topic to post message to
-slack_webhook_url = os.environ['SlackWebhook_URL']
+TOPIC_ARN = os.getenv("TOPIC_ARN")  # ARN for SNS topic to post message to
+slack_webhook_url = os.getenv("SlackWebhook_URL")
 
-TEMPLATE = '''At {} the IAM access key {} for user {} on account {} was deleted after it was found to have been exposed at the URL {}.
+TEMPLATE = """At {} the IAM access key {} for user {} on account {} was deleted after it was found to have been exposed at the URL {}.
 Below are summaries of the most recent actions, resource names, and resource types associated with this user over the last 24 hours.
 
 Actions:
@@ -27,103 +25,147 @@ Resource Names:
 Resource Types:
 {}
 
-These are summaries of only the most recent API calls made by this user. Please ensure your account remains secure by further reviewing the API calls made by this user in CloudTrail.'''
+These are summaries of only the most recent API calls made by this user. Please ensure your account remains secure by further reviewing the API calls made by this user in CloudTrail."""
 
-sns = boto3.client('sns')
+sns = boto3.client("sns")
+
 
 def lambda_handler(event, context):
-    account_id = event['account_id']
-    username = event['username']
-    deleted_key = event['deleted_key']
-    exposed_location = event['exposed_location']
-    time_discovered = event['time_discovered']
-    event_names = event['event_names']
-    resource_names = event['resource_names']
-    resource_types = event['resource_types']
-    subject = 'Security Alert! IAM Access Key Exposed For User {} On Account {}!!'.format(username, account_id)
-    subject2 = ' An email is sent with details.'
+    subject, message = create_message_from_event(event)
+
+    publish_msg(subject, message)
+
+    if not slack_webhook_url:
+        print("Slack_URL is empty!")
+        return
+
+    notify_slack(subject, " An email is sent with details.")
+
+    return {"statusCode": 200}
+
+
+def create_message_from_event(event: dict[str, Any]) -> tuple[str, str]:
+    account_id = event["account_id"]
+    username = event["username"]
+    deleted_key = event["deleted_key"]
+    exposed_location = event["exposed_location"]
+    time_discovered = event["time_discovered"]
+    event_names = event["event_names"]
+    resource_names = event["resource_names"]
+    resource_types = event["resource_types"]
+
+    
+    subject = (
+        f"Security Alert! IAM Access Key Exposed For User {username} On Account {account_id}!!"
+    )
     print("Generating message body...")
     event_summary = generate_summary_str(event_names)
     rname_summary = generate_summary_str(resource_names)
     rtype_summary = generate_summary_str(resource_types)
-    message = TEMPLATE.format(time_discovered,
-                              deleted_key,
-                              username,
-                              account_id,
-                              exposed_location,
-                              event_summary,
-                              rname_summary,
-                              rtype_summary
-                              )
-    print("Publishing message...")
-    publish_msg(subject, message)
+    message = TEMPLATE.format(
+        time_discovered,
+        deleted_key,
+        username,
+        account_id,
+        exposed_location,
+        event_summary,
+        rname_summary,
+        rtype_summary,
+    )
 
-    if(len(slack_webhook_url) == 0):
-        print("Slack_URL is empty!")
-    else:
-        print("Sending Slack notification")
-        print("Got SlackWebhookURL {}".format(slack_webhook_url))
-        notify_slack(subject, subject2)
+    return subject, message
 
-    return {
-     'statusCode': 200
-    }
 
-def generate_summary_str(summary_items):
-    """ Generates formatted string containing CloudTrail summary info.
+def generate_summary_str(summary_items: list) -> str:
+    """Generates formatted string containing CloudTrail summary info.
 
     Args:
         summary_items (list): List of tuples containing CloudTrail summary info.
 
     Returns:
-        (string)
-        Formatted string containing CloudTrail summary info.
-
+        str: Formatted string containing CloudTrail summary info.
     """
-    return '\t' + '\n\t'.join('{}: {}'.format(item[0], item[1]) for item in summary_items)
+    if not summary_items:
+        return ""
+        
+    return "\t" + "\n\t".join(
+        f"{item[0]}: {item[1]}" 
+        for item in summary_items
+    )
 
-def publish_msg(subject, message):
-    """ Publishes message to SNS topic.
+
+def publish_msg(subject: str, message: str) -> bool:
+    """Publishes message to SNS topic.
 
     Args:
-        subject (string): Subject of message to be published to topic.
-        message (string): Content of message to be published to topic.
+        subject (str): Subject of message to be published to topic.
+        message (str): Content of message to be published to topic.
 
     Returns:
-        (None)
-
+        bool: True if message was published successfully, False otherwise.
     """
+    if not TOPIC_ARN:
+        print("Missing TOPIC_ARN configuration")
+        return False
+
     try:
-        sns.publish(
+        response = sns.publish(
             TopicArn=TOPIC_ARN,
             Message=message,
             Subject=subject,
-            MessageStructure='string'
+            MessageStructure="string",
         )
+
+        if response and response.get("MessageId"):
+            print(f"Message published successfully. MessageId: {response['MessageId']}")
+            return True
+
+        print("Message publication failed - no MessageId received")
+        return False
+
+    except sns.exceptions.NotFoundException:
+        print(f"SNS topic '{TOPIC_ARN}' not found")
+        return False
+    except sns.exceptions.InvalidParameterException:
+        print("Invalid parameter in SNS publish request")
+        return False
     except Exception as e:
-        print(e)
-        print('Could not publish message to SNS topic "{}"'.format(TOPIC_ARN))
-        raise e
+        print(f"Failed to publish message to SNS topic '{TOPIC_ARN}': {str(e)}")
+        return False
+
 
 def notify_slack(subject, subject2):
+    """
+    Send notification to Slack using webhook URL.
+    Args:
+        subject (str): First part of the message
+        subject2 (str): Second part of the message
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        assert slack_webhook_url is not None
 
-   data = "{content:" + '"' + subject + subject2 +'"}'
+        if not slack_webhook_url.lower().startswith("https://hooks.slack.com"):
+            print("Invalid SlackWebhookURL")
+            return
 
-   headers = {
-      'Content-type': 'application/json'
-   }
+        # Construct JSON payload
+        payload = {"content": f"{subject}{subject2}"}
+        data = json.dumps(payload).encode("utf-8")
 
-   ## USING Python "urllib" instead
+        headers = {"Content-Type": "application/json"}
 
-   data = data.encode('ascii')
+        with urllib.request.urlopen(
+            urllib.request.Request(slack_webhook_url, data=data, headers=headers)
+        ) as response:
+            if response.status == 200:
+                print(f"Successfully sent Slack notification")
+                return True
+            else:
+                print(f"Failed to send Slack notification. Status: {response.status}")
+                return False
 
-   headers = {}
-   headers['Content-Type'] = "application/json"
-
-   ## Send the request
-   print("URL = ", slack_webhook_url)
-   req = urllib.request.Request(slack_webhook_url, data=data, headers=headers)
-   resp = urllib.request.urlopen(req)
-
-   ## Receive the response
-   print("RESPONSE: ", resp)
+    except Exception as e:
+        print(f"Error sending Slack notification: {str(e)}")
+        return False

@@ -1,0 +1,40 @@
+{
+    "StartAt": "Parallel",
+    "States": {
+        "Parallel": {
+            "Type": "Parallel",
+            "Branches": [
+                {
+                    "StartAt": "DeleteAccessKey",
+                    "States": {
+                        "DeleteAccessKey": {
+                            "Type": "Task",
+                            "Parameters": {
+                                "AccessKeyId.$": "$.detail.check-item-detail['Access Key ID']",
+                                "UserName.$": "$.detail.check-item-detail['User Name (IAM or Root)']"
+                            },
+                            "Resource": "arn:aws:states:::aws-sdk:iam:deleteAccessKey",
+                            "End": true
+                        }
+                    }
+                },
+                {
+                    "StartAt": "LookupCloudTrailEvents",
+                    "States": {
+                        "LookupCloudTrailEvents": {
+                            "Resource": "${LookupCloudTrailEvents}",
+                            "Type": "Task",
+                            "Next": "NotifySecurity"
+                        },
+                        "NotifySecurity": {
+                            "End": true,
+                            "Resource": "${NotifySecurity}",
+                            "Type": "Task"
+                        }
+                    }
+                }
+            ],
+            "End": true
+        }
+    }
+}

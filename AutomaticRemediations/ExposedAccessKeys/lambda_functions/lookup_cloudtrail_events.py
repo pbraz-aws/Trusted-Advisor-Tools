@@ -1,22 +1,32 @@
-import datetime
+from datetime import datetime, timezone, timedelta
 import collections
+from typing import Any
 import boto3
 
-cloudtrail = boto3.client('cloudtrail')
+cloudtrail = boto3.client("cloudtrail")
 
 
-def lambda_handler(event, context):
-    account_id = event['account_id']
-    time_discovered = event['time_discovered']
-    username = event['username']
-    deleted_key = event['deleted_key']
-    exposed_location = event['exposed_location']
-    endtime = datetime.datetime.now()  # Create start and end time for CloudTrail lookup
-    interval = datetime.timedelta(hours=24)
-    starttime = endtime - interval
-    print('Retrieving events...')
-    events = get_events(username, starttime, endtime)
-    print('Summarizing events...')
+def lambda_handler(event, context) -> dict[str, Any]:
+    try:
+        account_id = event["account"]
+        time_discovered = event["time"]
+        details = event["detail"]["check-item-detail"]
+        username = details["User Name (IAM or Root)"]
+        deleted_key = details["Access Key ID"]
+        exposed_location = details["Location"]
+        end_time = datetime.now(
+            tz=timezone.utc
+        )  # Create start and end time for CloudTrail lookup
+        interval = timedelta(hours=24)
+        start_time = end_time - interval
+    except KeyError as e:
+        print("Error: Invalid event data")
+        print(e)
+        raise (e)
+
+    print("Retrieving events...")
+    events = get_events(username, start_time, end_time)
+    print("Summarizing events...")
     event_names, resource_names, resource_types = get_events_summaries(events)
     return {
         "account_id": account_id,
@@ -26,12 +36,12 @@ def lambda_handler(event, context):
         "exposed_location": exposed_location,
         "event_names": event_names,
         "resource_names": resource_names,
-        "resource_types": resource_types
+        "resource_types": resource_types,
     }
 
 
-def get_events(username, starttime, endtime):
-    """ Retrieves detailed list of CloudTrail events that occured between the specified time interval.
+def get_events(username: str, starttime: datetime, endtime: datetime):
+    """Retrieves detailed list of CloudTrail events that occured between the specified time interval.
 
     Args:
         username (string): Username to lookup CloudTrail events for.
@@ -46,24 +56,21 @@ def get_events(username, starttime, endtime):
     try:
         response = cloudtrail.lookup_events(
             LookupAttributes=[
-                {
-                    'AttributeKey': 'Username',
-                    'AttributeValue': username
-                },
+                {"AttributeKey": "Username", "AttributeValue": username},
             ],
             StartTime=starttime,
             EndTime=endtime,
-            MaxResults=50
+            MaxResults=50,
         )
     except Exception as e:
         print(e)
-        print('Unable to retrieve CloudTrail events for user "{}"'.format(username))
-        raise(e)
+        print(f"Unable to retrieve CloudTrail events for user {username} ")
+        raise (e)
     return response
 
 
-def get_events_summaries(events):
-    """ Summarizes CloudTrail events list by reducing into counters of occurences for each event, resource name, and resource type in list.
+def get_events_summaries(events: dict):
+    """Summarizes CloudTrail events list by reducing into counters of occurences for each event, resource name, and resource type in list.
 
     Args:
         events (dict): Dictionary containing list of CloudTrail events to be summarized.
@@ -76,10 +83,18 @@ def get_events_summaries(events):
     event_name_counter = collections.Counter()
     resource_name_counter = collections.Counter()
     resource_type_counter = collections.Counter()
-    for event in events['Events']:
+    for event in events["Events"]:
         resources = event.get("Resources")
-        event_name_counter.update([event.get('EventName')])
+        event_name_counter.update([event.get("EventName")])
         if resources is not None:
-            resource_name_counter.update([resource.get("ResourceName") for resource in resources])
-            resource_type_counter.update([resource.get("ResourceType") for resource in resources])
-    return event_name_counter.most_common(10), resource_name_counter.most_common(10), resource_type_counter.most_common(10)
+            resource_name_counter.update(
+                [resource.get("ResourceName") for resource in resources]
+            )
+            resource_type_counter.update(
+                [resource.get("ResourceType") for resource in resources]
+            )
+    return (
+        event_name_counter.most_common(10),
+        resource_name_counter.most_common(10),
+        resource_type_counter.most_common(10),
+    )

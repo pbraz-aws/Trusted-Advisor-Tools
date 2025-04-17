@@ -5,7 +5,7 @@ Parameters:
   SlackWebhookURL:
     Type: String
     Description: "Enter the Slack Webhook URL as the input event to the Lambda function in JSON format {\"SlackWebhookURL\":\"<Replace with Slack Webhook URL you created earlier>\"}"
-    Default: "{\"SlackWebhookURL\":\"<Replace with Slack Webhook URL. Keep it empty, if you want to skip Slack Notification.>\"}"
+    Default: ""
 
 Globals:
   Function:
@@ -18,21 +18,10 @@ Resources:
   ExposedKeyStepFunction:
     Type: AWS::Serverless::StateMachine
     Properties:
-      Definition:
-        StartAt: DeleteAccessKeyPair
-        States:
-          DeleteAccessKeyPair:
-            Type: Task
-            Resource: !GetAtt DeleteAccessKeyPair.Arn
-            Next: LookupCloudTrailEvents
-          LookupCloudTrailEvents:
-            Type: Task
-            Resource: !GetAtt LookupCloudTrailEvents.Arn
-            Next: NotifySecurity
-          NotifySecurity:
-            Type: Task
-            Resource: !GetAtt NotifySecurity.Arn
-            End: True
+      DefinitionUri: state_machine/exposed_access_keys.asl.json
+      DefinitionSubstitutions:
+        LookupCloudTrailEvents: !GetAtt LookupCloudTrailEvents.Arn
+        NotifySecurity: !GetAtt NotifySecurity.Arn
       Events:
         CloudWatchEvent:
           Type: CloudWatchEvent
@@ -49,25 +38,18 @@ Resources:
                   - "Exposed Access Keys"
             State: "ENABLED"
       Policies:
-        - LambdaInvokePolicy:
-            FunctionName: !Ref DeleteAccessKeyPair
-        - LambdaInvokePolicy:
-            FunctionName: !Ref LookupCloudTrailEvents
-        - LambdaInvokePolicy:
-            FunctionName: !Ref NotifySecurity
-
-  DeleteAccessKeyPair:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: ../lambda_functions/
-      Handler: delete_access_key_pair.lambda_handler
-      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt NotificationTopic.TopicName
         - Version: "2012-10-17"
           Statement:
             - Effect: "Allow"
               Action:
                 - "iam:DeleteAccessKey"
               Resource: "*"
+        - LambdaInvokePolicy:
+            FunctionName: !Ref LookupCloudTrailEvents
+        - LambdaInvokePolicy:
+            FunctionName: !Ref NotifySecurity
  
   LookupCloudTrailEvents:
     Type: AWS::Serverless::Function
